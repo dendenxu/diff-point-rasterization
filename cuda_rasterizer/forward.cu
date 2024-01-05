@@ -155,13 +155,11 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
-	const glm::vec3* scales,
+	const float* radius,
 	const float scale_modifier,
-	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
-	const float* cov3D_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -172,9 +170,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	int* radii,
 	float2* points_xy_image,
 	float* depths,
-	float* cov3Ds,
 	float* rgb,
-	float4* conic_opacity,
+	float* radius2D,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered)
@@ -199,40 +196,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
-	// If 3D covariance matrix is precomputed, use it, otherwise compute
-	// from scaling and rotation parameters. 
-	const float* cov3D;
-	if (cov3D_precomp != nullptr)
-	{
-		cov3D = cov3D_precomp + idx * 6;
-	}
-	else
-	{
-		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
-		cov3D = cov3Ds + idx * 6;
-	}
-
-	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
-
-	// Invert covariance (EWA algorithm)
-	float det = (cov.x * cov.z - cov.y * cov.y);
-	if (det == 0.0f)
-		return;
-	float det_inv = 1.f / det;
-	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
-
-	// Compute extent in screen space (by finding eigenvalues of
-	// 2D covariance matrix). Use extent to compute a bounding rectangle
-	// of screen-space tiles that this Gaussian overlaps with. Quit if
-	// rectangle covers 0 tiles. 
-	float mid = 0.5f * (cov.x + cov.z);
-	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
-	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
-	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
+	// Compute screen space radius from input world space radius
+	float my_radius2D = abs(H * focal_y * radius[idx] / p_w) * scale_modifier;
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
-	getRect(point_image, my_radius, rect_min, rect_max, grid);
+	getRect(point_image, my_radius2D, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -248,10 +216,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
-	radii[idx] = my_radius;
+	radii[idx] = my_radius2D;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	radius2D[idx] = my_radius2D;
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -267,7 +235,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float* __restrict__ depths,
-	const float4* __restrict__ conic_opacity,
+	const float* __restrict__ radius2D,
 	float* __restrict__ out_alpha,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
@@ -296,7 +264,7 @@ renderCUDA(
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_radius2D[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -320,7 +288,7 @@ renderCUDA(
 			int coll_id = point_list[range.x + progress];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_radius2D[block.thread_rank()] = radius2D[coll_id];
 		}
 		block.sync();
 
@@ -330,20 +298,12 @@ renderCUDA(
 			// Keep track of current position in range
 			contributor++;
 
-			// Resample using conic matrix (cf. "Surface 
-			// Splatting" by Zwicker et al., 2001)
+			// Compute alpha based on ratio
 			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point location
+			float my_radius2D = collected_radius2D[j];
+			float alpha = 1 - dist2(d) / (my_radius2D * my_radius2D);
 
-			// Eq. (2) from 3D Gaussian splatting paper.
-			// Obtain alpha by multiplying with Gaussian opacity
-			// and its exponential falloff from mean.
-			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -385,7 +345,7 @@ void FORWARD::render(
 	const float2* means2D,
 	const float* colors,
 	const float* depths,
-	const float4* conic_opacity,
+	const float* radius2D,
 	float* out_alpha,
 	uint32_t* n_contrib,
 	const float* bg_color,
@@ -399,7 +359,7 @@ void FORWARD::render(
 		means2D,
 		colors,
 		depths,
-		conic_opacity,
+		radius2D,
 		out_alpha,
 		n_contrib,
 		bg_color,
@@ -409,13 +369,11 @@ void FORWARD::render(
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
-	const glm::vec3* scales,
+	const float* radius,
 	const float scale_modifier,
-	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
-	const float* cov3D_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -426,9 +384,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	int* radii,
 	float2* means2D,
 	float* depths,
-	float* cov3Ds,
+	float* radius2D,
 	float* rgb,
-	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered)
@@ -436,13 +393,11 @@ void FORWARD::preprocess(int P, int D, int M,
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
-		scales,
+		radius,
 		scale_modifier,
-		rotations,
 		opacities,
 		shs,
 		clamped,
-		cov3D_precomp,
 		colors_precomp,
 		viewmatrix, 
 		projmatrix,
@@ -453,9 +408,8 @@ void FORWARD::preprocess(int P, int D, int M,
 		radii,
 		means2D,
 		depths,
-		cov3Ds,
+		radius2D,
 		rgb,
-		conic_opacity,
 		grid,
 		tiles_touched,
 		prefiltered
