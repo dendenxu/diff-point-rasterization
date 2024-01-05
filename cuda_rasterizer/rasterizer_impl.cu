@@ -304,7 +304,45 @@ int CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
+	if (debug) {
+		std::cout << num_rendered << std::endl;
+		// uint64_t point_list_key;
+		// CHECK_CUDA(cudaMemcpy(&num_rendered, binningState.point_list_keys, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
+		// std::cout << point_list_key << std::endl;
+		// uint range_x, range_y;
+		// CHECK_CUDA(cudaMemcpy(&range_x, imgState.ranges, sizeof(uint), cudaMemcpyDeviceToHost), debug);
+		// CHECK_CUDA(cudaMemcpy(&range_y, imgState.ranges + 1, sizeof(uint), cudaMemcpyDeviceToHost), debug);
+		// std::cout << range_x << ", " << range_y << std::endl;
+		uint64_t max_key;
+		size_t temp_storage_bytes = 0;
+		void* d_temp_storage = nullptr;
+		uint64_t* d_max_key; // Device pointer for the maximum key
+
+		// Allocate memory for the device maximum key
+		cudaMalloc(&d_max_key, sizeof(uint64_t));
+
+		// First call to determine the size of temp_storage
+		cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered);
+
+		// Allocate temporary storage
+		cudaMalloc(&d_temp_storage, temp_storage_bytes);
+
+		// Perform reduction to find the maximum value
+		cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered);
+
+		// Copy the result back to the host
+		cudaMemcpy(&max_key, d_max_key, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+		// Cleanup
+		cudaFree(d_temp_storage);
+		cudaFree(d_max_key);
+
+		std::cout << (max_key >> 32) << std::endl;
+		std::cout << width * height << std::endl;
+	}
+
 	// Identify start and end of per-tile workloads in sorted list
+	std::cout << "OK 346\n";
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
@@ -312,6 +350,7 @@ int CudaRasterizer::Rasterizer::forward(
 			imgState.ranges);
 	CHECK_CUDA(, debug)
 
+	std::cout << "OK 354\n";
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	CHECK_CUDA(FORWARD::render(

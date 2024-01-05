@@ -197,7 +197,17 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
 	// Compute screen space radius from input world space radius
-	float my_radius2D = abs(H * focal_y * radius[idx] / p_w) * scale_modifier;
+	float my_radius2D = abs(2 * focal_y * radius[idx] * p_w) * scale_modifier;
+	// OpenGL K: 2 * self.fy / self.H,
+	// Radius conversion: abs(H * K[1][1] * radius / gl_Position.w) * radii_mult
+	// if (idx % 256 == 0) printf("%d %f %f %f %f\n", H, focal_y, radius[idx], p_w, my_radius2D); // check radius
+
+	// Apply low-pass filter: every Gaussian should be at least
+	// one pixel wide/high. Discard 3rd row and column.
+	// my_radius2D = min(1.0f, my_radius2D);
+	// if (my_radius2D != my_radius2D) printf("[Point] Encountered nan radius at thread: %d\n", idx);
+	// if (my_radius2D == 0.0) printf("[Point] Encountered zero radius at thread: %d\n", idx);
+
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius2D, rect_min, rect_max, grid);
@@ -218,9 +228,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	depths[idx] = p_view.z;
 	radii[idx] = my_radius2D;
 	points_xy_image[idx] = point_image;
+
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	radius2D[idx] = my_radius2D;
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
+
+	// if (cg::this_grid().thread_rank() % 256 == 0) printf("[Point] Exiting pre-processing\n"); // check running status
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -242,6 +255,8 @@ renderCUDA(
 	float* __restrict__ out_color,
 	float* __restrict__ out_depth)
 {
+	// printf("[Point] Entering render function\n"); // check running status
+
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -273,6 +288,8 @@ renderCUDA(
 	float C[CHANNELS] = { 0 };
 	float D = 0;
 
+	// printf("[Point] Before rendering loop\n"); // check running status
+
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
@@ -302,7 +319,9 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point location
 			float my_radius2D = collected_radius2D[j];
+			// if (cg::this_grid().thread_rank() % 256 == 0) printf("%f %f %f\n", my_radius2D, d.x, d.y); // check radius
 			float alpha = 1 - dist2(d) / (my_radius2D * my_radius2D);
+			// if (cg::this_grid().thread_rank() % 256 == 0) printf("%f %f %f %f\n", my_radius2D, alpha, d.x, d.y); // check radius
 
 			if (alpha < 1.0f / 255.0f)
 				continue;
