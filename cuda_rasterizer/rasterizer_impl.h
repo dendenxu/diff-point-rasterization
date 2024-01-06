@@ -66,8 +66,10 @@ namespace CudaRasterizer
 	template<typename T> 
 	size_t required(size_t P)
 	{
-		char* size = nullptr;
-		T::fromChunk(size, P);
+		// Will store the starting point into states
+		// And update this accumulating point to hold the final count
+		char* size = nullptr; // this is zero
+		T::fromChunk(size, P); 
 		return ((size_t)size) + 128;
 	}
 };

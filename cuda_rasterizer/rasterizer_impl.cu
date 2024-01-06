@@ -99,7 +99,7 @@ __global__ void duplicateWithKeys(
 		{
 			for (int x = rect_min.x; x < rect_max.x; x++)
 			{
-				uint64_t key = y * grid.x + x;
+				uint64_t key = y * grid.x + x; // will use getHigherMsb for better performance
 				key <<= 32;
 				key |= *((uint32_t*)&depths[idx]);
 				gaussian_keys_unsorted[off] = key;
@@ -122,12 +122,16 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
 	uint32_t currtile = key >> 32;
-	if (idx == 0)
+	// if (currtile > 10000 && idx % 256 == 0) printf("[Point] currtile: %u, key: %u, idx: %u, L: %d\n", currtile, key, idx, L);
+	// if (idx % 256 == 0) printf("%d\n", currtile);
+	if (idx == 0) {
+		// printf("[Point] idx 0 currtile: %u\n", currtile);
 		ranges[currtile].x = 0;
-	else
+	}
+	else 
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
-		if (currtile != prevtile)
+		if (currtile != prevtile) 
 		{
 			ranges[prevtile].y = idx;
 			ranges[currtile].x = idx;
@@ -194,9 +198,9 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
 int CudaRasterizer::Rasterizer::forward(
-	std::function<char* (size_t)> geometryBuffer,
-	std::function<char* (size_t)> binningBuffer,
-	std::function<char* (size_t)> imageBuffer,
+	std::function<char* (size_t)> geometryBuffer, // PyTorch function for managing memory buffers
+	std::function<char* (size_t)> binningBuffer, // PyTorch function for managing memory buffers
+	std::function<char* (size_t)> imageBuffer, // PyTorch function for managing memory buffers
 	const int P, int D, int M,
 	const float* background,
 	const int width, int height,
@@ -221,7 +225,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float focal_x = width / (2.0f * tan_fovx);
 
 	size_t chunk_size = required<GeometryState>(P);
-	char* chunkptr = geometryBuffer(chunk_size);
+	char* chunkptr = geometryBuffer(chunk_size); // will resize
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 
 	if (radii == nullptr)
@@ -234,7 +238,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Dynamically resize image-based auxiliary buffers during training
 	size_t img_chunk_size = required<ImageState>(width * height);
-	char* img_chunkptr = imageBuffer(img_chunk_size);
+	char* img_chunkptr = imageBuffer(img_chunk_size); // will resize
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
 	if (NUM_CHANNELS != 3 && colors_precomp == nullptr)
@@ -260,8 +264,8 @@ int CudaRasterizer::Rasterizer::forward(
 		radii,
 		geomState.means2D,
 		geomState.depths,
-		geomState.rgb,
 		geomState.radius2D,
+		geomState.rgb,
 		tile_grid,
 		geomState.tiles_touched,
 		prefiltered
@@ -304,53 +308,57 @@ int CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
-	if (debug) {
-		std::cout << num_rendered << std::endl;
-		// uint64_t point_list_key;
-		// CHECK_CUDA(cudaMemcpy(&num_rendered, binningState.point_list_keys, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
-		// std::cout << point_list_key << std::endl;
-		// uint range_x, range_y;
-		// CHECK_CUDA(cudaMemcpy(&range_x, imgState.ranges, sizeof(uint), cudaMemcpyDeviceToHost), debug);
-		// CHECK_CUDA(cudaMemcpy(&range_y, imgState.ranges + 1, sizeof(uint), cudaMemcpyDeviceToHost), debug);
-		// std::cout << range_x << ", " << range_y << std::endl;
-		uint64_t max_key;
-		size_t temp_storage_bytes = 0;
-		void* d_temp_storage = nullptr;
-		uint64_t* d_max_key; // Device pointer for the maximum key
+	// if (debug) {
+	// 	uint64_t point_list_key;
+	// 	CHECK_CUDA(cudaMemcpy(&point_list_key, binningState.point_list_keys + num_rendered - 1, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
 
-		// Allocate memory for the device maximum key
-		cudaMalloc(&d_max_key, sizeof(uint64_t));
+	// 	uint range_x, range_y;
+	// 	CHECK_CUDA(cudaMemcpy(&range_x, imgState.ranges, sizeof(uint), cudaMemcpyDeviceToHost), debug);
+	// 	CHECK_CUDA(cudaMemcpy(&range_y, (uint *)imgState.ranges + 1, sizeof(uint), cudaMemcpyDeviceToHost), debug);
 
-		// First call to determine the size of temp_storage
-		cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered);
+	// 	uint64_t max_key;
+	// 	size_t temp_storage_bytes = 0;
+	// 	void* d_temp_storage = nullptr;
+	// 	uint64_t* d_max_key; // Device pointer for the maximum key
 
-		// Allocate temporary storage
-		cudaMalloc(&d_temp_storage, temp_storage_bytes);
+	// 	// Allocate memory for the device maximum key
+	// 	cudaMalloc(&d_max_key, sizeof(uint64_t));
 
-		// Perform reduction to find the maximum value
-		cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered);
+	// 	// First call to determine the size of temp_storage
+	// 	CHECK_CUDA(cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered), debug);
 
-		// Copy the result back to the host
-		cudaMemcpy(&max_key, d_max_key, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+	// 	// Allocate temporary storage
+	// 	cudaMalloc(&d_temp_storage, temp_storage_bytes);
 
-		// Cleanup
-		cudaFree(d_temp_storage);
-		cudaFree(d_max_key);
+	// 	// Perform reduction to find the maximum value
+	// TODO: DEBUG THIS, ILLEGAL MEMORY ACCESS
+	// 	CHECK_CUDA(cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, binningState.point_list_keys, &max_key, num_rendered), debug);
 
-		std::cout << (max_key >> 32) << std::endl;
-		std::cout << width * height << std::endl;
-	}
+	// 	// Copy the result back to the host
+	// 	CHECK_CUDA(cudaMemcpy(&max_key, d_max_key, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
+
+	// 	// Cleanup
+	// 	cudaFree(d_temp_storage);
+	// 	cudaFree(d_max_key);
+
+	// 	std::cout << "[Point] Last sort key:  " << point_list_key << std::endl;
+	// 	std::cout << "[Point] First range:    " << range_x << ", " << range_y << std::endl;
+	// 	std::cout << "[Point] Rendered count: " << num_rendered << std::endl;
+	// 	std::cout << "[Point] Max key >> 32:  " << (max_key >> 32) << std::endl;
+	// 	std::cout << "[Point] Width * height: " << width * height << std::endl;
+	// 	CHECK_CUDA(, debug);
+	// }
 
 	// Identify start and end of per-tile workloads in sorted list
-	std::cout << "OK 346\n";
+	// std::cout << "OK 346\n";
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
 			binningState.point_list_keys,
 			imgState.ranges);
-	CHECK_CUDA(, debug)
+	CHECK_CUDA(, debug);
 
-	std::cout << "OK 354\n";
+	// std::cout << "OK 354\n";
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	CHECK_CUDA(FORWARD::render(
@@ -366,7 +374,7 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		background,
 		out_color,
-		out_depth), debug)
+		out_depth), debug);
 
 	return num_rendered;
 }

@@ -81,7 +81,7 @@ class _RasterizePoints(torch.autograd.Function):
                 num_rendered, color, depth, alpha, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_points(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
-                print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
+                print("An error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
             num_rendered, color, depth, alpha, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_points(*args)
