@@ -121,23 +121,22 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		return;
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
-	uint64_t key = point_list_keys[idx];
+	uint64_t key = point_list_keys[idx]; // fragment: gassian and tile pair
 	uint32_t currtile = key >> 32;
 	// if (idx == 0) printf("[Point] idx 0 currtile: %u\n", currtile);
-	if (idx == 0) {
-		ranges[currtile].x = 0;
-	}
+	if (idx == 0) 
+		ranges[currtile].x = 0; // handle start
 	else 
 	{
-		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
-		if (currtile != prevtile) 
+		uint32_t prevtile = point_list_keys[idx - 1] >> 32; // previous tile
+		if (currtile != prevtile) // we're not still processsing previous tile
 		{
 			ranges[prevtile].y = idx;
 			ranges[currtile].x = idx;
 		}
 	}
 	if (idx == L - 1)
-		ranges[currtile].y = L;
+		ranges[currtile].y = L; // handle end
 }
 
 // Mark Gaussians as visible/invisible, based on view frustum testing
@@ -232,8 +231,8 @@ int CudaRasterizer::Rasterizer::forward(
 		radii = geomState.internal_radii;
 	}
 
-	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
-	dim3 block(BLOCK_X, BLOCK_Y, 1);
+	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1); // launch in 2D
+	dim3 block(BLOCK_X, BLOCK_Y, 1); // launch in 2D
 
 	// Dynamically resize image-based auxiliary buffers during training
 	size_t img_chunk_size = required<ImageState>(width * height);
@@ -336,110 +335,105 @@ int CudaRasterizer::Rasterizer::forward(
 	return num_rendered;
 }
 
-// // Produce necessary gradients for optimization, corresponding
-// // to forward render pass
-// void CudaRasterizer::Rasterizer::backward(
-// 	const int P, int D, int M, int R,
-// 	const float* background,
-// 	const int width, int height,
-// 	const float* means3D,
-// 	const float* shs,
-// 	const float* colors_precomp,
-// 	const float* scales,
-// 	const float scale_modifier,
-// 	const float* rotations,
-// 	const float* cov3D_precomp,
-// 	const float* viewmatrix,
-// 	const float* projmatrix,
-// 	const float* campos,
-// 	const float tan_fovx, float tan_fovy,
-// 	const int* radii,
-// 	char* geom_buffer,
-// 	char* binning_buffer,
-// 	char* img_buffer,
-// 	const float* accum_alphas,
-// 	const float* dL_dpix,
-// 	const float* dL_dpix_depth,
-// 	const float* dL_dpix_alpha,
-// 	float* dL_dmean2D,
-// 	float* dL_dconic,
-// 	float* dL_dopacity,
-// 	float* dL_dcolor,
-// 	float* dL_ddepth,
-// 	float* dL_dmean3D,
-// 	float* dL_dcov3D,
-// 	float* dL_dsh,
-// 	float* dL_dscale,
-// 	float* dL_drot,
-// 	bool debug)
-// {
-// 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
-// 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
-// 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
+// Produce necessary gradients for optimization, corresponding
+// to forward render pass
+void CudaRasterizer::Rasterizer::backward(
+	const int P, int D, int M, int R,
+	const float* background,
+	const int width, int height,
+	const float* means3D,
+	const float* shs,
+	const float* colors_precomp,
+	const float* radius,
+	const float scale_modifier,
+	const float* opacities,
+	const float* viewmatrix,
+	const float* projmatrix,
+	const float* campos,
+	const float tan_fovx, float tan_fovy,
+	const int* radii,
+	char* geom_buffer,
+	char* binning_buffer,
+	char* img_buffer,
+	const float* accum_alphas,
+	const float* dL_dpix,
+	const float* dL_dpix_depth,
+	const float* dL_dpix_alpha,
+	float* dL_dmean2D,
+	float* dL_dradius2D,
+	float* dL_dopacity,
+	float* dL_dcolor,
+	float* dL_ddepth,
+	float* dL_dmean3D,
+	float* dL_dsh,
+	float* dL_dradius,
+	bool debug)
+{
+	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
+	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
+	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 
 
-// 	if (radii == nullptr)
-// 	{
-// 		radii = geomState.internal_radii;
-// 	}
+	if (radii == nullptr)
+	{
+		radii = geomState.internal_radii;
+	}
 
-// 	const float focal_y = height / (2.0f * tan_fovy);
-// 	const float focal_x = width / (2.0f * tan_fovx);
+	const float focal_y = height / (2.0f * tan_fovy);
+	const float focal_x = width / (2.0f * tan_fovx);
 
-// 	const dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
-// 	const dim3 block(BLOCK_X, BLOCK_Y, 1);
+	const dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+	const dim3 block(BLOCK_X, BLOCK_Y, 1);
 
-// 	// Compute loss gradients w.r.t. 2D mean position, conic matrix,
-// 	// opacity and RGB of Gaussians from per-pixel loss gradients.
-// 	// If we were given precomputed colors and not SHs, use them.
-// 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
-// 	CHECK_CUDA(BACKWARD::render(
-// 		tile_grid,
-// 		block,
-// 		imgState.ranges,
-// 		binningState.point_list,
-// 		width, height,
-// 		background,
-// 		geomState.means2D,
-// 		geomState.conic_opacity,
-// 		color_ptr,
-// 		geomState.depths,
-// 		accum_alphas,
-// 		imgState.n_contrib,
-// 		dL_dpix,
-// 		dL_dpix_depth,
-// 		dL_dpix_alpha,
-// 		(float3*)dL_dmean2D,
-// 		(float4*)dL_dconic,
-// 		dL_dopacity,
-// 		dL_dcolor,
-// 		dL_ddepth), debug)
+	// Compute loss gradients w.r.t. 2D mean position, conic matrix,
+	// opacity and RGB of Gaussians from per-pixel loss gradients.
+	// If we were given precomputed colors and not SHs, use them.
+	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	CHECK_CUDA(BACKWARD::render(
+		tile_grid,
+		block,
+		imgState.ranges,
+		binningState.point_list,
+		width, height,
+		background,
+		geomState.means2D,
+		geomState.radius2D,
+		color_ptr,
+		geomState.depths,
+		opacities,
+		accum_alphas,
+		imgState.n_contrib,
+		dL_dpix,
+		dL_dpix_depth,
+		dL_dpix_alpha,
+		(float3*)dL_dmean2D,
+		dL_dradius2D,
+		dL_dopacity,
+		dL_dcolor,
+		dL_ddepth), debug)
 
-// 	// Take care of the rest of preprocessing. Was the precomputed covariance
-// 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
-// 	// use the one we computed ourselves.
-// 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
-// 	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
-// 		(float3*)means3D,
-// 		radii,
-// 		shs,
-// 		geomState.clamped,
-// 		(glm::vec3*)scales,
-// 		(glm::vec4*)rotations,
-// 		scale_modifier,
-// 		cov3D_ptr,
-// 		viewmatrix,
-// 		projmatrix,
-// 		focal_x, focal_y,
-// 		tan_fovx, tan_fovy,
-// 		(glm::vec3*)campos,
-// 		(float3*)dL_dmean2D,
-// 		dL_dconic,
-// 		(glm::vec3*)dL_dmean3D,
-// 		dL_dcolor,
-// 		dL_ddepth,
-// 		dL_dcov3D,
-// 		dL_dsh,
-// 		(glm::vec3*)dL_dscale,
-// 		(glm::vec4*)dL_drot), debug)
-// }
+	// Take care of the rest of preprocessing. Was the precomputed covariance
+	// given to us or a scales/rot pair? If precomputed, pass that. If not,
+	// use the one we computed ourselves.
+	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
+		(float3*)means3D,
+		radii,
+		shs,
+		geomState.clamped,
+		radius,
+		opacities,
+		scale_modifier,
+		viewmatrix,
+		projmatrix,
+		focal_x, focal_y,
+		tan_fovx, tan_fovy,
+		(glm::vec3*)campos,
+		(float3*)dL_dmean2D,
+		(glm::vec3*)dL_dmean3D,
+		dL_dradius2D,
+		dL_dcolor,
+		dL_ddepth,
+		dL_dsh,
+		dL_dradius
+		), debug)
+}

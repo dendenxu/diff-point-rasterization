@@ -253,13 +253,13 @@ renderCUDA(
 	// printf("[Point] Entering render function\n"); // check running status
 
 	// Identify current tile and associated min/max pixel range.
-	auto block = cg::this_thread_block();
-	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	auto block = cg::this_thread_block(); // which block am I in
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X; // the total number of horizontal blocks
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y }; // note that the blocks and threads were launched in 2D?
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	uint32_t pix_id = W * pix.y + pix.x;
-	float2 pixf = { (float)pix.x, (float)pix.y };
+	uint32_t pix_id = W * pix.y + pix.x; // the id of the pixel in linear term
+	float2 pixf = { (float)pix.x, (float)pix.y }; // which pixel does this thread belong to
 
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W&& pix.y < H;
@@ -267,9 +267,9 @@ renderCUDA(
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int toDo = range.y - range.x;
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x]; // this is for indexing the point_list
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE); // how many batches of fragments to process
+	int toDo = range.y - range.x; // number of fragments to work out
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
@@ -278,13 +278,11 @@ renderCUDA(
 	__shared__ float collected_opacities[BLOCK_SIZE];
 
 	// Initialize helper variables
-	float T = 1.0f;
-	uint32_t contributor = 0;
-	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
-	float D = 0;
-
-	// printf("[Point] Before rendering loop\n"); // check running status
+	float T = 1.0f; // accumulated tranmittance
+	uint32_t contributor = 0; // for backward
+	uint32_t last_contributor = 0; // for backward
+	float C[CHANNELS] = { 0 }; // accumulated color
+	float D = 0; // accumulated depth
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -295,34 +293,34 @@ renderCUDA(
 			break;
 
 		// Collectively fetch per-Gaussian data from global to shared
-		int progress = i * BLOCK_SIZE + block.thread_rank();
-		if (range.x + progress < range.y)
+		int progress = i * BLOCK_SIZE + block.thread_rank(); // in this batch, in this block, what's the progress
+		if (range.x + progress < range.y) // not done fetching
 		{
-			int coll_id = point_list[range.x + progress];
+			int coll_id = point_list[range.x + progress]; // id from the point list
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_radius2D[block.thread_rank()] = radius2D[coll_id];
 			collected_opacities[block.thread_rank()] = opacities[coll_id];
 		}
-		block.sync();
+		block.sync(); // every thread should have fetched a batch of data upon here
 
 		// Iterate over current batch
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++) // this could be way less than 256
 		{
 			// Keep track of current position in range
-			contributor++;
+			contributor++; // for backward
 
 			// Compute alpha based on ratio
 			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point location
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point diff
 			float my_radius2D = collected_radius2D[j];
 			float opacity = collected_opacities[j];
-			float alpha = (1 - dist2(d) / (my_radius2D * my_radius2D)) * opacity;
+			float alpha = (1 - dist2(d) / (my_radius2D * my_radius2D)) * opacity; // 4K4D's opacity function
 
-			if (alpha < 1.0f / 255.0f)
+			if (alpha < 1.0f / 255.0f) // skip low alpha points
 				continue;
 			float test_T = T * (1 - alpha);
-			if (test_T < 0.0001f)
+			if (test_T < 0.0001f) // early stopping
 			{
 				done = true;
 				continue;
@@ -330,9 +328,9 @@ renderCUDA(
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
-			D += depths[collected_id[j]] * alpha * T;
-			T = test_T;
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T; // volume rendering
+			D += depths[collected_id[j]] * alpha * T; // volume rendering depth
+			T = test_T; // updated transmittance
 
 			// Keep track of last range entry to update this
 			// pixel.

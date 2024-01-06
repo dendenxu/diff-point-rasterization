@@ -89,7 +89,7 @@ class _RasterizePoints(torch.autograd.Function):
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
-        ctx.save_for_backward(colors_precomp, means3D, radius, radii, sh, geomBuffer, binningBuffer, imgBuffer, alpha)
+        ctx.save_for_backward(colors_precomp, means3D, radius, opacities, radii, sh, geomBuffer, binningBuffer, imgBuffer, alpha)
         return color, depth, alpha, radii
 
     @staticmethod
@@ -98,15 +98,15 @@ class _RasterizePoints(torch.autograd.Function):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
-        colors_precomp, means3D, scales, rotations, radii, sh, geomBuffer, binningBuffer, imgBuffer, alpha = ctx.saved_tensors
+        colors_precomp, means3D, radius, opacities, radii, sh, geomBuffer, binningBuffer, imgBuffer, alpha = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
                 means3D, 
                 radii, 
                 colors_precomp, 
-                scales, 
-                rotations, 
+                radius, 
+                opacities, 
                 raster_settings.scale_modifier, 
                 raster_settings.viewmatrix, 
                 raster_settings.projmatrix, 
@@ -129,13 +129,13 @@ class _RasterizePoints(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)  # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_radius = _C.rasterize_points_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_sh, grad_radius = _C.rasterize_points_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-            grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_radius = _C.rasterize_points_backward(*args)
+            grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_sh, grad_radius = _C.rasterize_points_backward(*args)
 
         grads = (
             grad_means3D,
@@ -144,7 +144,6 @@ class _RasterizePoints(torch.autograd.Function):
             grad_colors_precomp,
             grad_opacities,
             grad_radius,
-            grad_cov3Ds_precomp,
             None,
         )
 

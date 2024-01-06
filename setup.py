@@ -24,10 +24,10 @@ setup(
             sources=[
                 "cuda_rasterizer/rasterizer_impl.cu",
                 "cuda_rasterizer/forward.cu",
-                # "cuda_rasterizer/backward.cu",
+                "cuda_rasterizer/backward.cu",
                 "rasterize_points.cu",
                 "ext.cpp"],
-            extra_compile_args={"nvcc": ["-I" + join(dirname(abspath(__file__)), "third_party/glm/")]})
+            extra_compile_args={"nvcc": ["-I" + join(dirname(abspath(__file__)), "third_party/glm/"), "-Xcudafe", "--diag_suppress=20012"]})
     ],
     cmdclass={
         'build_ext': BuildExtension

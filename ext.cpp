@@ -14,6 +14,6 @@
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rasterize_points", &RasterizePointsCUDA);
-  // m.def("rasterize_points_backward", &RasterizePointsBackwardCUDA);
+  m.def("rasterize_points_backward", &RasterizePointsBackwardCUDA);
   m.def("mark_visible", &markVisible);
 }

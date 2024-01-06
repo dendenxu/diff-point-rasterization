@@ -350,20 +350,22 @@ __global__ void preprocessCUDA(
 	const int* radii,
 	const float* shs,
 	const bool* clamped,
-	const glm::vec3* scales,
-	const glm::vec4* rotations,
+	const float* radius,
+	const float* opacities,
 	const float scale_modifier,
+	const float focal_x, float focal_y,
+	const float tan_fovx, float tan_fovy,
 	const float* view,
 	const float* proj,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
+	const float* dL_dradius2D,
 	glm::vec3* dL_dmeans,
 	float* dL_dcolor,
 	float* dL_ddepth,
-	float* dL_dcov3D,
 	float* dL_dsh,
-	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot)
+	float* dL_dradius
+	)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0))
@@ -407,8 +409,10 @@ __global__ void preprocessCUDA(
 		computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
 
 	// Compute gradient updates due to computing covariance from scale/rotation
-	if (scales)
-		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+	if (radius)
+		// computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+		// my_radius2D = abs(focal_y * radius[idx] * p_w) * scale_modifier;
+		dL_dradius[idx] = dL_dradius2D[idx] * abs(m_w) * focal_y * scale_modifier;
 }
 
 // Backward version of the rendering procedure.
@@ -420,16 +424,17 @@ renderCUDA(
 	int W, int H,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
-	const float4* __restrict__ conic_opacity,
+	const float* __restrict__ radius2D,
 	const float* __restrict__ colors,
 	const float* __restrict__ depths,
+	const float* __restrict__ opacities,
 	const float* __restrict__ accum_alphas,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_dpixel_depths,
 	const float* __restrict__ dL_dpixel_alphas,
 	float3* __restrict__ dL_dmean2D,
-	float4* __restrict__ dL_dconic2D,
+	float* __restrict__ dL_dradius2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_ddepths)
@@ -453,9 +458,10 @@ renderCUDA(
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_radius2D[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_depths[BLOCK_SIZE];
+	__shared__ float collected_opacities[BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -477,22 +483,22 @@ renderCUDA(
 	{
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
-		dL_dpixel_depth = dL_dpixel_depths[pix_id];
-		dL_dpixel_alpha = dL_dpixel_alphas[pix_id];
+		dL_dpixel_depth = dL_dpixel_depths[pix_id]; // get this gradient
+		dL_dpixel_alpha = dL_dpixel_alphas[pix_id]; // get this gradient
 	}
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 	float last_depth = 0;
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
-	const float ddelx_dx = 0.5 * W;
-	const float ddely_dy = 0.5 * H;
+	// const float ddelx_dx = 0.5 * W;
+	// const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
-		// and load them in revers order.
+		// and load them in reverse order.
 		block.sync();
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
@@ -500,10 +506,11 @@ renderCUDA(
 			const int coll_id = point_list[range.y - progress - 1];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_radius2D[block.thread_rank()] = radius2D[coll_id];
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 			collected_depths[block.thread_rank()] = depths[coll_id];
+			collected_opacities[block.thread_rank()] = opacities[coll_id];
 		}
 		block.sync();
 
@@ -519,13 +526,14 @@ renderCUDA(
 			// Compute blending values, as before.
 			const float2 xy = collected_xy[j];
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			const float4 con_o = collected_conic_opacity[j];
-			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
 
-			const float G = exp(power);
-			const float alpha = min(0.99f, con_o.w * G);
+			float my_radius2D = collected_radius2D[j];
+			float opacity = collected_opacities[j];
+			float R2 = my_radius2D * my_radius2D;
+			float D2 = dist2(d);
+			float G = (1 - D2 / R2);
+			float alpha = G * opacity; // 4K4D's opacity functio0n
+
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
@@ -561,7 +569,6 @@ renderCUDA(
 			accum_rea = last_alpha + (1.f - last_alpha) * accum_rea;
 			dL_dalpha += (1 - accum_rea) * dL_dpixel_alpha;
 
-
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
 			last_alpha = alpha;
@@ -576,21 +583,12 @@ renderCUDA(
 			// Set background depth value == 0, thus no contribution for
 			// dL_dalpha
 
-			// Helpful reusable temporary variables
-			const float dL_dG = con_o.w * dL_dalpha;
-			const float gdx = G * d.x;
-			const float gdy = G * d.y;
-			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
-			const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
-
 			// Update gradients w.r.t. 2D mean position of the Gaussian
-			atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx * ddelx_dx);
-			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
+			atomicAdd(&dL_dmean2D[global_id].x, -2 * d.x / R2);
+			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
-			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
-			atomicAdd(&dL_dconic2D[global_id].y, -0.5f * gdx * d.y * dL_dG);
-			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
+			atomicAdd(&dL_dradius2D[global_id], 2 * D2 / (my_radius2D * R2));
 
 			// Update gradients w.r.t. opacity of the Gaussian
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
@@ -604,43 +602,22 @@ void BACKWARD::preprocess(
 	const int* radii,
 	const float* shs,
 	const bool* clamped,
-	const glm::vec3* scales,
-	const glm::vec4* rotations,
+	const float* radius,
+	const float* opacities,
 	const float scale_modifier,
-	const float* cov3Ds,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
-	const float* dL_dconic,
+	const float* dL_dradius2D,
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_ddepth,
-	float* dL_dcov3D,
 	float* dL_dsh,
-	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot)
+	float* dL_dradius)
 {
-	// Propagate gradients for the path of 2D conic matrix computation. 
-	// Somewhat long, thus it is its own kernel rather than being part of 
-	// "preprocess". When done, loss gradient w.r.t. 3D means has been
-	// modified and gradient w.r.t. 3D covariance matrix has been computed.	
-	computeCov2DCUDA << <(P + 255) / 256, 256 >> > (
-		P,
-		means3D,
-		radii,
-		cov3Ds,
-		focal_x,
-		focal_y,
-		tan_fovx,
-		tan_fovy,
-		viewmatrix,
-		dL_dconic,
-		(float3*)dL_dmean3D,
-		dL_dcov3D);
-
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
 	// matrix gradients to scale and rotation.
@@ -650,20 +627,22 @@ void BACKWARD::preprocess(
 		radii,
 		shs,
 		clamped,
-		(glm::vec3*)scales,
-		(glm::vec4*)rotations,
+		radius,
+		opacities,
 		scale_modifier,
+		focal_x, focal_y,
+		tan_fovx, tan_fovy,
 		viewmatrix,
 		projmatrix,
 		campos,
 		(float3*)dL_dmean2D,
+		dL_dradius2D,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_ddepth,
-		dL_dcov3D,
 		dL_dsh,
-		dL_dscale,
-		dL_drot);
+		dL_dradius
+		);
 }
 
 void BACKWARD::render(
@@ -673,16 +652,17 @@ void BACKWARD::render(
 	int W, int H,
 	const float* bg_color,
 	const float2* means2D,
-	const float4* conic_opacity,
+	const float* radius2D,
 	const float* colors,
 	const float* depths,
+	const float* opacities,
 	const float* accum_alphas,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	const float* dL_dpixel_depths,
 	const float* dL_dpixel_alphas,
 	float3* dL_dmean2D,
-	float4* dL_dconic2D,
+	float* dL_dradius2D,
 	float* dL_dopacity,
 	float* dL_dcolors,
 	float* dL_ddepths)
@@ -693,16 +673,17 @@ void BACKWARD::render(
 		W, H,
 		bg_color,
 		means2D,
-		conic_opacity,
+		radius2D,
 		colors,
 		depths,
+		opacities,
 		accum_alphas,
 		n_contrib,
 		dL_dpixels,
 		dL_dpixel_depths,
 		dL_dpixel_alphas,
 		dL_dmean2D,
-		dL_dconic2D,
+		dL_dradius2D,
 		dL_dopacity,
 		dL_dcolors,
 		dL_ddepths);
