@@ -204,13 +204,14 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
-	// my_radius2D = min(1.0f, my_radius2D);
+	// my_radius2D = max(0.5f, my_radius2D); // using 1.0f will make sure there's no illegal memory access
 	// if (my_radius2D != my_radius2D) printf("[Point] Encountered nan radius at thread: %d\n", idx);
 	// if (my_radius2D == 0.0) printf("[Point] Encountered zero radius at thread: %d\n", idx);
 
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius2D, rect_min, rect_max, grid);
+	if (idx % 256 == 0) printf("[Point] xy: %f, %f rad: %f rect: %d, %d, %d, %d\n", point_image.x, point_image.y, my_radius2D, rect_min.x, rect_min.y, rect_max.x, rect_max.y); // check radius
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 

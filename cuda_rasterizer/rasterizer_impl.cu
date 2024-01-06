@@ -101,7 +101,8 @@ __global__ void duplicateWithKeys(
 			{
 				uint64_t key = y * grid.x + x; // will use getHigherMsb for better performance
 				key <<= 32;
-				key |= *((uint32_t*)&depths[idx]);
+				// For positive numbers, the binary representation of IEEE 754 floating point numbers is already consistent in order, meaning that a larger binary representation corresponds to a larger numerical value. Therefore, these floating point numbers can be directly subjected to radix sort without the need for special adjustments to the exponent and mantissa parts.
+				key |= *((uint32_t*)&depths[idx]); // just a reinterpret cast
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
 				off++;
@@ -124,8 +125,9 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	uint32_t currtile = key >> 32;
 	// if (currtile > 10000 && idx % 256 == 0) printf("[Point] currtile: %u, key: %u, idx: %u, L: %d\n", currtile, key, idx, L);
 	// if (idx % 256 == 0) printf("%d\n", currtile);
+	// if (currtile > 10000 && idx % 32768 == 0) printf("[Point] currtile: %u, idx: %u\n", currtile, idx);
+	// if (idx == 0) printf("[Point] idx 0 currtile: %u\n", currtile);
 	if (idx == 0) {
-		// printf("[Point] idx 0 currtile: %u\n", currtile);
 		ranges[currtile].x = 0;
 	}
 	else 
@@ -308,13 +310,13 @@ int CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
-	// if (debug) {
-	// 	uint64_t point_list_key;
-	// 	CHECK_CUDA(cudaMemcpy(&point_list_key, binningState.point_list_keys + num_rendered - 1, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
+	if (debug) {
+		uint64_t point_list_key;
+		CHECK_CUDA(cudaMemcpy(&point_list_key, binningState.point_list_keys + num_rendered - 1, sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
 
-	// 	uint range_x, range_y;
-	// 	CHECK_CUDA(cudaMemcpy(&range_x, imgState.ranges, sizeof(uint), cudaMemcpyDeviceToHost), debug);
-	// 	CHECK_CUDA(cudaMemcpy(&range_y, (uint *)imgState.ranges + 1, sizeof(uint), cudaMemcpyDeviceToHost), debug);
+		uint range_x, range_y;
+		CHECK_CUDA(cudaMemcpy(&range_x, imgState.ranges, sizeof(uint), cudaMemcpyDeviceToHost), debug);
+		CHECK_CUDA(cudaMemcpy(&range_y, (uint *)imgState.ranges + 1, sizeof(uint), cudaMemcpyDeviceToHost), debug);
 
 	// 	uint64_t max_key;
 	// 	size_t temp_storage_bytes = 0;
@@ -341,13 +343,13 @@ int CudaRasterizer::Rasterizer::forward(
 	// 	cudaFree(d_temp_storage);
 	// 	cudaFree(d_max_key);
 
-	// 	std::cout << "[Point] Last sort key:  " << point_list_key << std::endl;
-	// 	std::cout << "[Point] First range:    " << range_x << ", " << range_y << std::endl;
-	// 	std::cout << "[Point] Rendered count: " << num_rendered << std::endl;
-	// 	std::cout << "[Point] Max key >> 32:  " << (max_key >> 32) << std::endl;
-	// 	std::cout << "[Point] Width * height: " << width * height << std::endl;
-	// 	CHECK_CUDA(, debug);
-	// }
+		std::cout << "[Point] Last sort key:  " << point_list_key << std::endl;
+		std::cout << "[Point] First range:    " << range_x << ", " << range_y << std::endl;
+		std::cout << "[Point] Rendered count: " << num_rendered << std::endl;
+		// std::cout << "[Point] Max key >> 32:  " << (max_key >> 32) << std::endl;
+		std::cout << "[Point] Width * height: " << width * height << std::endl;
+		CHECK_CUDA(, debug);
+	}
 
 	// Identify start and end of per-tile workloads in sorted list
 	// std::cout << "OK 346\n";
