@@ -197,21 +197,20 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
 	// Compute screen space radius from input world space radius
-	float my_radius2D = abs(2 * focal_y * radius[idx] * p_w) * scale_modifier;
+	float my_radius2D = abs(focal_y * radius[idx] * p_w) * scale_modifier;
 	// OpenGL K: 2 * self.fy / self.H,
 	// Radius conversion: abs(H * K[1][1] * radius / gl_Position.w) * radii_mult
 	// if (idx % 256 == 0) printf("%d %f %f %f %f\n", H, focal_y, radius[idx], p_w, my_radius2D); // check radius
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
-	// my_radius2D = max(0.5f, my_radius2D); // using 1.0f will make sure there's no illegal memory access
+	my_radius2D = max(1.0f, my_radius2D); // using 1.0f will make sure there's no illegal memory access
 	// if (my_radius2D != my_radius2D) printf("[Point] Encountered nan radius at thread: %d\n", idx);
 	// if (my_radius2D == 0.0) printf("[Point] Encountered zero radius at thread: %d\n", idx);
 
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius2D, rect_min, rect_max, grid);
-	if (idx % 256 == 0) printf("[Point] xy: %f, %f rad: %f rect: %d, %d, %d, %d\n", point_image.x, point_image.y, my_radius2D, rect_min.x, rect_min.y, rect_max.x, rect_max.y); // check radius
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -233,7 +232,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	radius2D[idx] = my_radius2D;
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
-
+	// if (idx % 256 == 0) printf("[Point] xy: %f, %f rad: %f rect: %d, %d, %d, %d tiles_touched: %d\n", point_image.x, point_image.y, my_radius2D, rect_min.x, rect_min.y, rect_max.x, rect_max.y, tiles_touched[idx]); // check radius
 	// if (cg::this_grid().thread_rank() % 256 == 0) printf("[Point] Exiting pre-processing\n"); // check running status
 }
 
