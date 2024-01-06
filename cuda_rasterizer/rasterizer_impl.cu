@@ -326,6 +326,7 @@ int CudaRasterizer::Rasterizer::forward(
 		feature_ptr,
 		geomState.depths,
 		geomState.radius2D,
+		opacities,
 		out_alpha,
 		imgState.n_contrib,
 		background,

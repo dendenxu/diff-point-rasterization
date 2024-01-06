@@ -203,7 +203,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
-	my_radius2D = max(1.0f, my_radius2D); // using 1.0f will make sure there's no illegal memory access
 
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
@@ -223,7 +222,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
-	radii[idx] = my_radius2D;
+	radii[idx] = max(1.0f, my_radius2D);  // using 1.0f will make sure there's no illegal memory access
 	points_xy_image[idx] = point_image;
 
 	// Inverse 2D covariance and opacity neatly pack into one float4
@@ -244,6 +243,7 @@ renderCUDA(
 	const float* __restrict__ features,
 	const float* __restrict__ depths,
 	const float* __restrict__ radius2D,
+	const float* __restrict__ opacities,
 	float* __restrict__ out_alpha,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
@@ -275,6 +275,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float collected_radius2D[BLOCK_SIZE];
+	__shared__ float collected_opacities[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -301,6 +302,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_radius2D[block.thread_rank()] = radius2D[coll_id];
+			collected_opacities[block.thread_rank()] = opacities[coll_id];
 		}
 		block.sync();
 
@@ -314,9 +316,8 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point location
 			float my_radius2D = collected_radius2D[j];
-			// if (cg::this_grid().thread_rank() % 256 == 0) printf("%f %f %f\n", my_radius2D, d.x, d.y); // check radius
-			float alpha = 1 - dist2(d) / (my_radius2D * my_radius2D);
-			// if (cg::this_grid().thread_rank() % 256 == 0) printf("%f %f %f %f\n", my_radius2D, alpha, d.x, d.y); // check radius
+			float opacity = collected_opacities[j];
+			float alpha = (1 - dist2(d) / (my_radius2D * my_radius2D)) * opacity;
 
 			if (alpha < 1.0f / 255.0f)
 				continue;
@@ -360,6 +361,7 @@ void FORWARD::render(
 	const float* colors,
 	const float* depths,
 	const float* radius2D,
+	const float* opacities,
 	float* out_alpha,
 	uint32_t* n_contrib,
 	const float* bg_color,
@@ -374,6 +376,7 @@ void FORWARD::render(
 		colors,
 		depths,
 		radius2D,
+		opacities,
 		out_alpha,
 		n_contrib,
 		bg_color,

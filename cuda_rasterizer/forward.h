@@ -54,6 +54,7 @@ namespace FORWARD
 		const float* features,
 		const float* depths,
 		const float* radius2D,
+		const float* opacities,
 		float* out_alpha,
 		uint32_t* n_contrib,
 		const float* bg_color,
