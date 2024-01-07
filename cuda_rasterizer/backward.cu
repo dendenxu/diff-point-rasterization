@@ -340,9 +340,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
 }
 
-// Backward pass of the preprocessing steps, except
-// for the covariance computation and inversion
-// (those are handled by a previous kernel call)
+// Backward pass of the preprocessing steps
 template<int C>
 __global__ void preprocessCUDA(
 	int P, int D, int M,
@@ -491,8 +489,8 @@ renderCUDA(
 	float last_depth = 0;
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
-	// const float ddelx_dx = 0.5 * W;
-	// const float ddely_dy = 0.5 * H;
+	const float ddelx_dx = 0.5 * W;
+	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -584,10 +582,10 @@ renderCUDA(
 			// dL_dalpha
 
 			// Update gradients w.r.t. 2D mean position of the Gaussian
-			atomicAdd(&dL_dmean2D[global_id].x, -2 * d.x / R2 * opacity * dL_dalpha);
-			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2 * opacity * dL_dalpha);
+			atomicAdd(&dL_dmean2D[global_id].x, -2 * d.x / R2 * opacity * dL_dalpha * ddelx_dx);
+			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2 * opacity * dL_dalpha * ddelx_dx);
 
-			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
+			// Update gradients w.r.t. 2d screen space radius of the Gaussian
 			atomicAdd(&dL_dradius2D[global_id], 2 * opacity * D2 / (my_radius2D * R2) * dL_dalpha); // 2od^2r^-3
 
 			// Update gradients w.r.t. opacity of the Gaussian
