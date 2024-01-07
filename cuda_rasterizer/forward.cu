@@ -320,11 +320,12 @@ renderCUDA(
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point diff
 			float my_radius2D = collected_radius2D[j];
 			float opacity = collected_opacities[j];
-			// float D2 = dist2(d);`
-			// float R2 = my_radius2D * my_radius2D;
-			// float G = 1 - D2 / R2;
-			// float alpha = G * opacity; // 4K4D's opacity functio0n
+
+			// Evaluate the point density equation
 			float alpha = (1 - dist2(d) / (my_radius2D * my_radius2D)) * opacity; // 4K4D's opacity function
+
+			// Avoid numerical instabilities (see paper appendix). 
+			// alpha = min(0.99f, alpha);
  
 			if (alpha < 1.0f / 255.0f) // skip low alpha points
 				continue;
