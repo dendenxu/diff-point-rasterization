@@ -588,7 +588,7 @@ renderCUDA(
 			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2 * opacity * dL_dalpha);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
-			atomicAdd(&dL_dradius2D[global_id], 2 * opacity * D2 / (my_radius2D * R2) * dL_dalpha);
+			atomicAdd(&dL_dradius2D[global_id], 2 * opacity * D2 / (my_radius2D * R2) * dL_dalpha); // 2od^2r^-3
 
 			// Update gradients w.r.t. opacity of the Gaussian
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
