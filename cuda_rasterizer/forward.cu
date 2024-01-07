@@ -222,7 +222,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
-	radii[idx] = max(1.0f, my_radius2D);  // using 1.0f will make sure there's no illegal memory access
+	// Using 1.0f will make sure there's no illegal memory access
+	// Try touching more tiles to avoid strange black points / lines
+	radii[idx] = max(1.0f, my_radius2D * 1.05);  
 	points_xy_image[idx] = point_image;
 
 	// Inverse 2D covariance and opacity neatly pack into one float4
