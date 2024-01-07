@@ -14,6 +14,9 @@
 
 #include "config.h"
 #include "stdio.h"
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+namespace cg = cooperative_groups;
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
@@ -141,33 +144,26 @@ __forceinline__ __device__ float dist2(float2 d)
 	return d.x * d.x + d.y * d.y;
 }
 
-
 __forceinline__ __device__ bool in_frustum(int idx,
 	const float* orig_points,
 	const float* viewmatrix,
 	const float* projmatrix,
 	bool prefiltered,
-	float3& p_view)
+	float3& p_view,
+	const float padding = 0.01f // padding in ndc space
+	)
 {
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 
 	// Bring points to screen space
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	// float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	// float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
-	p_view = transformPoint4x3(p_orig, viewmatrix);
-	
-	// TODO: Actually use this?
-	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
-	{
-		if (prefiltered)
-		{
-			printf("Point is filtered although prefiltered is set. This shouldn't happen!");
-			__trap();
-		}
-		return false;
-	}
-	return true;
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	p_view = transformPoint4x3(p_orig, viewmatrix); // write this outside
+
+	// if (idx % 32768 == 0) printf("Viewspace point: %f, %f, %f\n", p_view.x, p_view.y, p_view.z);
+	// if (idx % 32768 == 0) printf("Projected point: %f, %f, %f\n", p_proj.x, p_proj.y, p_proj.z);
+	return (p_proj.z > -1 - padding) && (p_proj.z < 1 + padding) && (p_proj.x > -1 - padding) && (p_proj.x < 1. + padding) && (p_proj.y > -1 - padding) && (p_proj.y < 1. + padding);
 }
 
 #define CHECK_CUDA(A, debug) 														 \
@@ -181,7 +177,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 		}								 											 \
 	}
 
-#define cudaMemoryTestREMOVE_WHEN_DONE()                                       \
+#define TEST_CUDA_MEMORY()                                                     \
   do {                                                                         \
     const int N = 1337, bytes = N * sizeof(float);                             \
     std::vector<float> cpuvec(N);                                              \

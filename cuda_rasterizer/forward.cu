@@ -165,8 +165,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
 	const int W, int H,
-	const float tan_fovx, float tan_fovy,
-	const float focal_x, float focal_y,
+	const float tan_fovx, const float tan_fovy,
+	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
 	float* depths,
@@ -315,8 +315,12 @@ renderCUDA(
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };  // screen space center point diff
 			float my_radius2D = collected_radius2D[j];
 			float opacity = collected_opacities[j];
+			// float D2 = dist2(d);`
+			// float R2 = my_radius2D * my_radius2D;
+			// float G = 1 - D2 / R2;
+			// float alpha = G * opacity; // 4K4D's opacity functio0n
 			float alpha = (1 - dist2(d) / (my_radius2D * my_radius2D)) * opacity; // 4K4D's opacity function
-
+ 
 			if (alpha < 1.0f / 255.0f) // skip low alpha points
 				continue;
 			float test_T = T * (1 - alpha);
