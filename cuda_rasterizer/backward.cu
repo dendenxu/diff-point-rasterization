@@ -412,7 +412,7 @@ __global__ void preprocessCUDA(
 	if (radius)
 		// computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 		// my_radius2D = abs(focal_y * radius[idx] * p_w) * scale_modifier;
-		dL_dradius[idx] = abs(m_w) * focal_y * scale_modifier;
+		dL_dradius[idx] = dL_dradius2D[idx] * abs(m_w) * focal_y * scale_modifier;
 }
 
 // Backward version of the rendering procedure.
@@ -584,11 +584,11 @@ renderCUDA(
 			// dL_dalpha
 
 			// Update gradients w.r.t. 2D mean position of the Gaussian
-			atomicAdd(&dL_dmean2D[global_id].x, -2 * d.x / R2 * opacity);
-			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2 * opacity);
+			atomicAdd(&dL_dmean2D[global_id].x, -2 * d.x / R2 * opacity * dL_dalpha);
+			atomicAdd(&dL_dmean2D[global_id].y, -2 * d.y / R2 * opacity * dL_dalpha);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
-			atomicAdd(&dL_dradius2D[global_id], 2 * D2 / (my_radius2D * R2));
+			atomicAdd(&dL_dradius2D[global_id], 2 * opacity * D2 / (my_radius2D * R2) * dL_dalpha);
 
 			// Update gradients w.r.t. opacity of the Gaussian
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
