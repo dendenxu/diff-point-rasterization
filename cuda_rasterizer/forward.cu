@@ -174,7 +174,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float* rgb,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered
+	)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -206,7 +207,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
-	getRect(point_image, my_radius2D, rect_min, rect_max, grid);
+	int my_touchy_radii = max(1.0f, my_radius2D);
+	getRect(point_image, my_touchy_radii, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -222,9 +224,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
-	// Using 1.0f will make sure there's no illegal memory access
+
+	// Using min radius of 1.0f will make sure there's no illegal memory access
 	// Try touching more tiles to avoid strange black points / lines
-	radii[idx] = max(1.0f, my_radius2D * 1.05);  
+	radii[idx] = my_touchy_radii;
 	points_xy_image[idx] = point_image;
 
 	// Inverse 2D covariance and opacity neatly pack into one float4
