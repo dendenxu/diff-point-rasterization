@@ -52,7 +52,7 @@ class _RasterizePoints(torch.autograd.Function):
         radius,
         raster_settings,
     ):
-
+        opacities = opacities.clip(0, 1)
         # Restructure arguments the way that the C++ lib expects them
         args = (
             raster_settings.bg,
