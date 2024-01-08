@@ -3,3 +3,4 @@ diff_point_rasterization.egg-info/
 dist/
 diff_point_rasterization/__pycache__/
 diff_point_rasterization/*.so
+*.pyd

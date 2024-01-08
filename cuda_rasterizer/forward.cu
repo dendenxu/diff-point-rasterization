@@ -207,7 +207,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
-	int my_touchy_radii = max(1.0f, my_radius2D + 0.5);
+	int my_touchy_radii = max(1, int(my_radius2D + 0.5));
 	getRect(point_image, my_touchy_radii, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
