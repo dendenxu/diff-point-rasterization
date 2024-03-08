@@ -11,7 +11,15 @@
 
 from setuptools import setup
 from os.path import dirname, join, abspath
+
+# fmt: off
+import sys
+import subprocess
+subprocess.call([sys.executable, '-m', 'ensurepip'])
+subprocess.call([sys.executable, '-m', 'pip', 'install', 'torch'])  # HACK: dirty...
+
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
+# fmt: on
 
 dirname(abspath(__file__))
 
@@ -32,5 +40,4 @@ setup(
     cmdclass={
         'build_ext': BuildExtension
     },
-    install_requires=['torch']
 )
